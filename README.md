@@ -28,8 +28,11 @@ The project contains four main scripts:
 ---
 
 ## Data
+Data are sourced from Janssens, B., Pappalardo, L., De Bock, J., Bogaert, M., & Verstockt, S. (2024). Geospatial Road Cycling Race Results Data Set. arXiv preprint [arXiv:2410.09055.](https://arxiv.org/abs/2410.09055)
 - `race_results_2017_2023.csv` – historical race results  
-- `structured_course_data.csv` – structured course features per race  
+- `structured_course_data.csv` – structured course features per race
+
+Data span the period 2017-2023, including both male and female professional cycling events. Descriptions and example usage can be found at [Janssens' Github](https://github.com/bram-janssens/CyclingAnalytics)
 
 ---
 
