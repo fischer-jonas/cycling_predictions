@@ -1,25 +1,18 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.metrics import classification_report, average_precision_score
 
-# ------------------------------
-# Load data
-# ------------------------------
+# --- Load data ---
 data = pd.read_csv("race_results_2017_2023.csv")
 courses = pd.read_csv("structured_course_data.csv")
 
-# ------------------------------
-# Convert rank to numeric
-# DNF (Did Not Finish) -> assign a high number (e.g., 1000)
-# ------------------------------
+# --- Rank numeric, DNF = 1000 ---
 data['Rank'] = pd.to_numeric(data['Rank'], errors='coerce').fillna(1000)
 
-# ------------------------------
-# Compute rolling features to capture recent form
-# Sort by rider and date first
-# ------------------------------
+# --- Rolling-Features ---
 data = data.sort_values(['Name', 'Date'])
 window = 3
 data['Top10Flag'] = (data['Rank'] <= 10).astype(int)
@@ -29,53 +22,56 @@ for col in rolling_features:
     data[f'Rolling_{col}'] = data.groupby('Name')[col].transform(
         lambda x: x.shift().rolling(window, min_periods=1).mean()
     )
+    
+# --- Plot Rolling-Features for Pogi and Wout---  
+drivers = ["POGAČAR Tadej", "VAN AERT Wout"]
+data['Date'] = pd.to_datetime(data['Date'], format='%d %B %Y')
 
-# ------------------------------
-# Merge race results with course features
-# ------------------------------
+plt.figure(figsize=(12, 6))
+
+for d in drivers:
+    df = data[data['Name'] == d].sort_values('Date')
+    plt.scatter(df['Date'], df['Rolling_Rank'], s=10, label=d)
+
+plt.ylim(200, 1)  
+ax = plt.gca()
+dates = data.sort_values('Date')['Date'].unique()
+ax.set_xticks(dates[::100]) # Show only every 100th date on x-axis
+plt.xticks(rotation=45)
+plt.title("Rolling_Rank")
+plt.xlabel("Date")
+plt.ylabel("Rank")
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# --- Merge with Course data ---
 merged = pd.merge(data, courses, on="Race Name", how="inner")
 
-# ------------------------------
-# Define target variable
-# 1 if top 10 finish, 0 otherwise
-# ------------------------------
+# --- Target label ---
 merged['Win'] = (merged['Rank'] <= 10).astype(int)
 
-# ------------------------------
-# Select features: only numeric
-# Drop columns that are not features
-# ------------------------------
+# --- Feature-Selection ---
 drop_cols = [
     'Win','Rank','Name','Race Name','Date','Time','Unnamed: 0',
-    'Alpine','Team Time Trial','Access Road','Singletrack','Unknown'
+    'Alpine','Team Time Trial','Access Road','Singletrack','Unknown','UCI points', 'PCS points', 'Top10Flag'
 ]
 X = merged.drop(columns=drop_cols)
 X = X.select_dtypes(include=[np.number])
 y = merged['Win']
 
-# ------------------------------
-# Split train/test by race to avoid data leakage
-# ------------------------------
-train_races, test_races = train_test_split(
-    merged['Race Name'].unique(), test_size=0.2, random_state=42
-)
-
+# --- Train-Test Split due to Races ---
+train_races, test_races = train_test_split(merged['Race Name'].unique(), test_size=0.2, random_state=42)
 X_train = X[merged['Race Name'].isin(train_races)]
 X_test = X[merged['Race Name'].isin(test_races)]
 y_train = y[merged['Race Name'].isin(train_races)]
 y_test = y[merged['Race Name'].isin(test_races)]
-
-# Keep rider names and races for later
 names_test = merged.loc[merged['Race Name'].isin(test_races), ['Race Name', 'Name']]
 
-# ------------------------------
-# Handle class imbalance
-# ------------------------------
-scale_pos_weight = (len(y_train) - sum(y_train)) / sum(y_train)
+# --- Scale pos weight ---
+scale_pos_weight = (len(y_train)-sum(y_train))/sum(y_train)
 
-# ------------------------------
-# Define parameter grid for GridSearchCV
-# ------------------------------
+# --- GridSearchCV Parameter ---
 param_grid = {
     'n_estimators': [200, 300],
     'max_depth': [4, 5, 6],
@@ -84,55 +80,42 @@ param_grid = {
     'colsample_bytree': [0.8, 0.9]
 }
 
-xgb = XGBClassifier(
-    random_state=42,
-    scale_pos_weight=scale_pos_weight,
-    eval_metric='logloss'
-)
+xgb = XGBClassifier(random_state=42, scale_pos_weight=scale_pos_weight, eval_metric='logloss')
 
 grid = GridSearchCV(
     estimator=xgb,
     param_grid=param_grid,
-    scoring='average_precision',  # PR-AUC for imbalanced dataset
+    scoring='average_precision',  # PR-AUC
     cv=3,
-    verbose=2,  # show progress
+    verbose=1,
     n_jobs=-1
 )
 
-# ------------------------------
-# Fit model with GridSearch
-# ------------------------------
+# --- Training with GridSearch ---
 grid.fit(X_train, y_train)
 
-# Best parameters
-print("Best parameters:", grid.best_params_)
+print("Beste Parameter:", grid.best_params_)
 
-# ------------------------------
-# Make predictions on test set
-# ------------------------------
+# --- Prediction ---
 best_model = grid.best_estimator_
 y_pred_prob = best_model.predict_proba(X_test)[:,1]
 y_pred = best_model.predict(X_test)
 
-# ------------------------------
-# Evaluation
-# ------------------------------
 print(classification_report(y_test, y_pred))
 print("PR-AUC (Win):", average_precision_score(y_test, y_pred_prob))
 
-# ------------------------------
-# Assign probabilities to riders and normalize per race
-# ------------------------------
+# --- Winner for each Race ---
 results = names_test.copy()
 results['WinProb'] = y_pred_prob
-
-# Normalize probabilities per race
 results['WinProbNorm'] = results.groupby('Race Name')['WinProb'].transform(lambda x: x / x.sum())
-
-# ------------------------------
-# Determine predicted winner per race
-# ------------------------------
 predicted_winners = results.loc[results.groupby('Race Name')['WinProbNorm'].idxmax()]
 
-print("\nTop 10 predicted winners across all races:")
+print("\nVorhergesagte Sieger (Top10):")
 print(predicted_winners[['Race Name', 'Name', 'WinProbNorm']].sort_values('WinProbNorm', ascending=False).head(10))
+
+# --- Show Feature Importance ---
+importances = pd.Series(best_model.feature_importances_, index=X.columns)
+plt.figure(figsize=(8, 6))
+importances.sort_values().plot(kind='barh')
+plt.title("Feature Importance (Top10 Prediction)")
+plt.show()
